@@ -1,8 +1,14 @@
 {
   "name": "ghost-typing",
+  "displayName": "ghost-typing",
+  "publisher": "kaito-mori-0614",
   "version": "0.1.0",
   "description": "Trace a target Git branch by typing its changes as VS Code ghost text.",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaito-mori-0614/ghost-typing.git"
+  },
   "main": "./extension.js",
   "bin": {
     "ghost-typing": "./bin/ghost-typing.js"
@@ -14,11 +20,14 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "categories": [
+    "Other"
+  ],
   "contributes": {
     "commands": [
       {
         "command": "ghost-typing.nextChange",
-        "title": "Ghost Typing: Go to Next Change"
+        "title": "ghost-typing: Go to Next Change"
       }
     ]
   },
