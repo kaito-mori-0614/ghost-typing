@@ -5,7 +5,11 @@ const fs = require('node:fs');
 const { firstChange, remainingInsertedTextAtCursor } = require('./lib/ghost-diff');
 
 function git(cwd, args) {
-  return execFileSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).replace(/\r\n/g, '\n');
+  return execFileSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe']
+  }).replace(/\r\n/g, '\n');
 }
 
 function repoRootForDocument(document) {
@@ -25,9 +29,9 @@ function targetFromBranch(root) {
   const branch = git(root, ['branch', '--show-current']).trim();
   const prefix = 'ghost-typing/';
   if (!branch.startsWith(prefix)) return null;
+
   const target = branch.slice(prefix.length);
-  const candidates = [target, `origin/${target}`];
-  for (const candidate of candidates) {
+  for (const candidate of [target, `origin/${target}`]) {
     try {
       git(root, ['rev-parse', '--verify', candidate]);
       return candidate;
@@ -65,6 +69,7 @@ async function ensureTargetFiles(root, targetRef) {
     const [status, ...rest] = line.split('\t');
     const relPath = rest[rest.length - 1];
     if (!relPath || status.startsWith('D')) continue;
+
     const absPath = path.join(root, relPath);
     if (!fs.existsSync(absPath)) {
       fs.mkdirSync(path.dirname(absPath), { recursive: true });
@@ -80,26 +85,55 @@ function activate(context) {
   });
   context.subscriptions.push(deletionDecoration);
 
-  async function refreshDeletion(editor) {
-    if (!editor) return;
+  function getChange(editor) {
+    if (!editor) return null;
     const document = editor.document;
     const root = repoRootForDocument(document);
-    if (!root) return editor.setDecorations(deletionDecoration, []);
+    if (!root) return null;
     const targetRef = targetFromBranch(root);
-    if (!targetRef) return editor.setDecorations(deletionDecoration, []);
+    if (!targetRef) return null;
     const relPath = relativeGitPath(root, document);
     const target = targetText(root, targetRef, relPath);
-    if (target == null) return editor.setDecorations(deletionDecoration, []);
+    if (target == null) return null;
 
-    const change = firstChange(document.getText().replace(/\r\n/g, '\n'), target.replace(/\r\n/g, '\n'));
-    if (!change || !change.removedText) return editor.setDecorations(deletionDecoration, []);
+    const current = document.getText().replace(/\r\n/g, '\n');
+    const normalizedTarget = target.replace(/\r\n/g, '\n');
+    return {
+      root,
+      targetRef,
+      relPath,
+      target: normalizedTarget,
+      change: firstChange(current, normalizedTarget)
+    };
+  }
 
-    const start = offsetToPosition(document, change.currentOffset);
-    const end = offsetToPosition(document, change.currentOffset + change.removedText.length);
+  async function refreshDeletion(editor) {
+    if (!editor) return;
+    const info = getChange(editor);
+    if (!info?.change?.removedText) {
+      editor.setDecorations(deletionDecoration, []);
+      return;
+    }
+
+    const { change } = info;
+    const start = offsetToPosition(editor.document, change.currentOffset);
+    const end = offsetToPosition(editor.document, change.currentOffset + change.removedText.length);
     editor.setDecorations(deletionDecoration, [new vscode.Range(start, end)]);
   }
 
-  const provider = vscode.languages.registerInlineCompletionItemProvider(
+  async function goToFirstChange(editor) {
+    if (!editor) return;
+    const info = getChange(editor);
+    if (!info?.change) return;
+
+    const pos = offsetToPosition(editor.document, info.change.currentOffset);
+    editor.selection = new vscode.Selection(pos, pos);
+    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    await refreshDeletion(editor);
+    await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+  }
+
+  context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider(
     [{ scheme: 'file' }],
     {
       provideInlineCompletionItems(document, position) {
@@ -117,58 +151,50 @@ function activate(context) {
         const insertText = remainingInsertedTextAtCursor(current, normalizedTarget, cursorOffset);
         if (!insertText) return [];
 
-        return [new vscode.InlineCompletionItem(insertText, new vscode.Range(position, position))];
+        return [new vscode.InlineCompletionItem(
+          insertText,
+          new vscode.Range(position, position)
+        )];
       }
     }
-  );
-  context.subscriptions.push(provider);
+  ));
 
   context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.nextChange', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
-    const document = editor.document;
-    const root = repoRootForDocument(document);
-    if (!root) return;
-    const targetRef = targetFromBranch(root);
-    if (!targetRef) {
-      vscode.window.showInformationMessage('ghost-typing: current branch is not a ghost-typing branch.');
+    const info = getChange(editor);
+    if (!info) {
+      vscode.window.showInformationMessage('ghost-typing: no target is active for this file.');
       return;
     }
-
-    const relPath = relativeGitPath(root, document);
-    const target = targetText(root, targetRef, relPath);
-    if (target == null) return;
-    const change = firstChange(document.getText().replace(/\r\n/g, '\n'), target.replace(/\r\n/g, '\n'));
-    if (!change) {
-      vscode.window.showInformationMessage(`ghost-typing: ${relPath} matches ${targetRef}`);
+    if (!info.change) {
+      vscode.window.showInformationMessage(`ghost-typing: ${info.relPath} matches ${info.targetRef}`);
       return;
     }
+    await goToFirstChange(editor);
+  }));
 
-    const pos = offsetToPosition(document, change.currentOffset);
-    editor.selection = new vscode.Selection(pos, pos);
-    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(async editor => {
+    await goToFirstChange(editor);
+  }));
+
+  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(async event => {
+    const editor = vscode.window.activeTextEditor;
+    if (editor?.document !== event.document) return;
     await refreshDeletion(editor);
     await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
   }));
 
-  context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(refreshDeletion));
-  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
-    if (vscode.window.activeTextEditor?.document === event.document) {
-      refreshDeletion(vscode.window.activeTextEditor);
-      vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-    }
-  }));
-
-  const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
-  if (root) {
+  const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+  if (workspaceRoot) {
     try {
-      const actualRoot = git(root, ['rev-parse', '--show-toplevel']).trim();
-      const targetRef = targetFromBranch(actualRoot);
-      if (targetRef) ensureTargetFiles(actualRoot, targetRef);
+      const root = git(workspaceRoot, ['rev-parse', '--show-toplevel']).trim();
+      const targetRef = targetFromBranch(root);
+      if (targetRef) await ensureTargetFiles(root, targetRef);
     } catch {}
   }
 
-  refreshDeletion(vscode.window.activeTextEditor);
+  await goToFirstChange(vscode.window.activeTextEditor);
 }
 
 function deactivate() {}
