@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require('node:child_process');
+const { launchNewWindow } = require('../lib/vscode-launcher');
 
 function runGit(args, options = {}) {
   try {
@@ -25,8 +26,7 @@ function sanitizeTarget(target) {
 }
 
 function resolveTarget(input) {
-  const candidates = [input, `origin/${input}`];
-  for (const candidate of candidates) {
+  for (const candidate of [input, `origin/${input}`]) {
     try {
       runGit(['rev-parse', '--verify', candidate]);
       return candidate;
@@ -36,8 +36,7 @@ function resolveTarget(input) {
 }
 
 function ensureClean() {
-  const status = runGit(['status', '--porcelain']);
-  if (status) fail('working tree has uncommitted changes. Commit or stash them first.');
+  if (runGit(['status', '--porcelain'])) fail('working tree has uncommitted changes. Commit or stash them first.');
 }
 
 function currentGhostTarget() {
@@ -45,22 +44,18 @@ function currentGhostTarget() {
   const prefix = 'ghost-typing/';
   if (!branch.startsWith(prefix)) fail('current branch is not a ghost-typing branch.');
   const target = branch.slice(prefix.length);
-  return { branch, target, targetRef: resolveTarget(target) };
+  return { targetRef: resolveTarget(target) };
 }
 
 function start(targetInput) {
-  runGit(['rev-parse', '--is-inside-work-tree']);
+  const root = runGit(['rev-parse', '--show-toplevel']);
   ensureClean();
-
   const sourceBranch = runGit(['branch', '--show-current']);
   if (!sourceBranch) fail('detached HEAD is not supported.');
-  if (sourceBranch.startsWith('ghost-typing/')) {
-    fail(`already on a ghost-typing branch: ${sourceBranch}`);
-  }
+  if (sourceBranch.startsWith('ghost-typing/')) fail(`already on a ghost-typing branch: ${sourceBranch}`);
 
   const targetRef = resolveTarget(targetInput);
-  const targetName = sanitizeTarget(targetInput);
-  const workBranch = `ghost-typing/${targetName}`;
+  const workBranch = `ghost-typing/${sanitizeTarget(targetInput)}`;
   const base = runGit(['merge-base', sourceBranch, targetRef]);
 
   try {
@@ -71,51 +66,36 @@ function start(targetInput) {
   }
 
   runGit(['switch', '-c', workBranch, base], { stdio: 'inherit' });
-
   console.log(`ghost-typing: target = ${targetRef}`);
   console.log(`ghost-typing: base   = ${base.slice(0, 12)}`);
   console.log(`ghost-typing: work   = ${workBranch}`);
-  console.log('ghost-typing: ready. Continue in the current VS Code window.');
+
+  if (!launchNewWindow(root)) {
+    fail('could not open a new VS Code window. Check your VS Code installation.');
+  }
 }
 
 function status() {
   const { targetRef } = currentGhostTarget();
   const tracked = runGit(['diff', '--stat', targetRef, '--', '.']);
   const untracked = runGit(['ls-files', '--others', '--exclude-standard']);
-
-  if (!tracked && !untracked) {
-    console.log(`ghost-typing: working tree appears to match ${targetRef}`);
-    return;
-  }
-
+  if (!tracked && !untracked) return console.log(`ghost-typing: working tree appears to match ${targetRef}`);
   if (tracked) console.log(tracked);
-  if (untracked) {
-    console.log('Untracked files:');
-    console.log(untracked);
-  }
-  console.log('ghost-typing: final commit command performs an exact staged-tree comparison.');
+  if (untracked) console.log(`Untracked files:\n${untracked}`);
 }
 
 function commit(message) {
   if (!message) fail('usage: ghost-typing commit "message"');
   const { targetRef } = currentGhostTarget();
-
   runGit(['add', '-A'], { stdio: 'inherit' });
-
   const stagedNames = runGit(['diff', '--cached', '--name-only', targetRef, '--', '.']);
-  if (stagedNames) {
-    console.error('ghost-typing: target does not match yet. Remaining files:');
-    console.error(stagedNames);
-    console.error('ghost-typing: changes remain staged so you can inspect them with `git diff --cached`.');
-    process.exit(2);
-  }
-
+  if (stagedNames) fail(`target does not match yet. Remaining files:\n${stagedNames}`, 2);
   runGit(['commit', '-m', message], { stdio: 'inherit' });
 }
 
 const args = process.argv.slice(2);
 if (args[0] === '--help' || args[0] === '-h' || args.length === 0) {
-  console.log(`ghost-typing\n\nUsage:\n  ghost-typing <target-branch>\n  ghost-typing status\n  ghost-typing commit "message"\n\nExample:\n  ghost-typing ai-output`);
+  console.log('ghost-typing\n\nUsage:\n  ghost-typing <target-branch>\n  ghost-typing status\n  ghost-typing commit "message"');
   process.exit(args.length ? 0 : 1);
 }
 
