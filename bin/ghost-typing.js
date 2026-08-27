@@ -40,8 +40,22 @@ function ensureClean() {
   if (status) fail('working tree has uncommitted changes. Commit or stash them first.');
 }
 
-function openCode() {
-  const result = spawnSync('code', ['.'], {
+function firstChangedFile(targetRef) {
+  const output = runGit(['diff', '--name-status', 'HEAD', targetRef, '--', '.']);
+  for (const line of output.split('\n')) {
+    if (!line) continue;
+    const [status, ...rest] = line.split('\t');
+    if (status.startsWith('D')) continue;
+    const file = rest[rest.length - 1];
+    if (file) return file;
+  }
+  return null;
+}
+
+function openCode(targetRef) {
+  const firstFile = firstChangedFile(targetRef);
+  const args = firstFile ? ['.', '-g', `${firstFile}:1`] : ['.'];
+  const result = spawnSync('code', args, {
     stdio: 'inherit',
     shell: process.platform === 'win32'
   });
@@ -86,7 +100,7 @@ function start(targetInput) {
   console.log(`ghost-typing: base   = ${base.slice(0, 12)}`);
   console.log(`ghost-typing: work   = ${workBranch}`);
   console.log('ghost-typing: opening VS Code...');
-  openCode();
+  openCode(targetRef);
 }
 
 function status() {
