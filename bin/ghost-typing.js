@@ -4,19 +4,20 @@ const { execFileSync, spawnSync } = require('node:child_process');
 
 function runGit(args, options = {}) {
   try {
-    return execFileSync('git', args, {
+    const output = execFileSync('git', args, {
       encoding: 'utf8',
       stdio: options.stdio || ['ignore', 'pipe', 'pipe']
-    }).trim();
+    });
+    return typeof output === 'string' ? output.trim() : '';
   } catch (error) {
     const stderr = error.stderr ? String(error.stderr).trim() : error.message;
     throw new Error(stderr || `git ${args.join(' ')} failed`);
   }
 }
 
-function fail(message) {
+function fail(message, code = 1) {
   console.error(`ghost-typing: ${message}`);
-  process.exit(1);
+  process.exit(code);
 }
 
 function sanitizeTarget(target) {
@@ -36,16 +37,25 @@ function resolveTarget(input) {
 
 function ensureClean() {
   const status = runGit(['status', '--porcelain']);
-  if (status) {
-    fail('working tree has uncommitted changes. Commit or stash them first.');
-  }
+  if (status) fail('working tree has uncommitted changes. Commit or stash them first.');
 }
 
 function openCode() {
-  const result = spawnSync('code', ['.'], { stdio: 'inherit', shell: process.platform === 'win32' });
+  const result = spawnSync('code', ['.'], {
+    stdio: 'inherit',
+    shell: process.platform === 'win32'
+  });
   if (result.error) {
     console.warn('ghost-typing: VS Code could not be opened automatically. Run `code .` manually.');
   }
+}
+
+function currentGhostTarget() {
+  const branch = runGit(['branch', '--show-current']);
+  const prefix = 'ghost-typing/';
+  if (!branch.startsWith(prefix)) fail('current branch is not a ghost-typing branch.');
+  const target = branch.slice(prefix.length);
+  return { branch, target, targetRef: resolveTarget(target) };
 }
 
 function start(targetInput) {
@@ -80,37 +90,37 @@ function start(targetInput) {
 }
 
 function status() {
-  const branch = runGit(['branch', '--show-current']);
-  if (!branch.startsWith('ghost-typing/')) {
-    fail('current branch is not a ghost-typing branch.');
+  const { targetRef } = currentGhostTarget();
+  const tracked = runGit(['diff', '--stat', targetRef, '--', '.']);
+  const untracked = runGit(['ls-files', '--others', '--exclude-standard']);
+
+  if (!tracked && !untracked) {
+    console.log(`ghost-typing: working tree appears to match ${targetRef}`);
+    return;
   }
-  const target = branch.slice('ghost-typing/'.length);
-  const targetRef = resolveTarget(target);
-  const diff = runGit(['diff', '--stat', targetRef, '--', '.']);
-  if (!diff) {
-    console.log(`ghost-typing: current files match ${targetRef}`);
-  } else {
-    console.log(diff);
+
+  if (tracked) console.log(tracked);
+  if (untracked) {
+    console.log('Untracked files:');
+    console.log(untracked);
   }
+  console.log('ghost-typing: final commit command performs an exact staged-tree comparison.');
 }
 
 function commit(message) {
   if (!message) fail('usage: ghost-typing commit "message"');
-  const branch = runGit(['branch', '--show-current']);
-  if (!branch.startsWith('ghost-typing/')) {
-    fail('current branch is not a ghost-typing branch.');
-  }
-  const target = branch.slice('ghost-typing/'.length);
-  const targetRef = resolveTarget(target);
+  const { targetRef } = currentGhostTarget();
 
-  const names = runGit(['diff', '--name-only', targetRef, '--', '.']);
-  if (names) {
+  runGit(['add', '-A'], { stdio: 'inherit' });
+
+  const stagedNames = runGit(['diff', '--cached', '--name-only', targetRef, '--', '.']);
+  if (stagedNames) {
     console.error('ghost-typing: target does not match yet. Remaining files:');
-    console.error(names);
+    console.error(stagedNames);
+    console.error('ghost-typing: changes remain staged so you can inspect them with `git diff --cached`.');
     process.exit(2);
   }
 
-  runGit(['add', '-A'], { stdio: 'inherit' });
   runGit(['commit', '-m', message], { stdio: 'inherit' });
 }
 
