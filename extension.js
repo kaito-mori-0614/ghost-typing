@@ -78,7 +78,7 @@ async function ensureTargetFiles(root, targetRef) {
   }
 }
 
-function activate(context) {
+async function activate(context) {
   const deletionDecoration = vscode.window.createTextEditorDecorationType({
     opacity: '0.45',
     textDecoration: 'line-through'
