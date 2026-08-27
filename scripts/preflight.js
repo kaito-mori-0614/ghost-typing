@@ -13,7 +13,7 @@ const branch = git(['branch', '--show-current']);
 if (branch !== 'main') fail(`install must run from main (current: ${branch || 'detached HEAD'}).`);
 
 const dirty = git(['status', '--porcelain']);
-if (dirty) fail('working tree is not clean. Commit/stash changes before installing.');
+if (dirty) fail(`working tree is not clean:\n${dirty}`);
 
 try {
   git(['fetch', 'origin', 'main']);
