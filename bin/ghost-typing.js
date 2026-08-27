@@ -54,13 +54,15 @@ function firstChangedFile(targetRef) {
 
 function openCode(targetRef) {
   const firstFile = firstChangedFile(targetRef);
-  const args = firstFile ? ['.', '-g', `${firstFile}:1`] : ['.'];
+  const args = firstFile
+    ? ['--new-window', '.', '-g', `${firstFile}:1`]
+    : ['--new-window', '.'];
   const result = spawnSync('code', args, {
     stdio: 'inherit',
     shell: process.platform === 'win32'
   });
   if (result.error) {
-    console.warn('ghost-typing: VS Code could not be opened automatically. Run `code .` manually.');
+    console.warn('ghost-typing: VS Code could not be opened automatically. Run `code --new-window .` manually.');
   }
 }
 
