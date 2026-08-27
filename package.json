@@ -2,7 +2,7 @@
   "name": "ghost-typing",
   "displayName": "ghost-typing",
   "publisher": "kaito-mori-0614",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "Trace a target Git branch by typing its changes as VS Code ghost text.",
   "private": true,
   "repository": {
@@ -34,12 +34,13 @@
     ]
   },
   "scripts": {
-    "check": "node --check bin/ghost-typing.js && node --check extension.js && node --check lib/ghost-diff.js && node --check scripts/install-extension.js",
+    "check": "node --check bin/ghost-typing.js && node --check extension.js && node --check lib/ghost-diff.js && node --check scripts/preflight.js && node --check scripts/install-extension.js",
     "test": "node --test",
+    "preflight": "node scripts/preflight.js",
     "link:cli": "npm link",
-    "package:extension": "vsce package --out ghost-typing.vsix",
+    "package:extension": "vsce package --skip-license --out ghost-typing.vsix",
     "install:extension": "npm run package:extension && node scripts/install-extension.js",
-    "install:all": "npm run link:cli && npm run install:extension"
+    "install:all": "npm run preflight && npm run link:cli && npm run install:extension"
   },
   "devDependencies": {
     "@vscode/vsce": "^3.6.0"
