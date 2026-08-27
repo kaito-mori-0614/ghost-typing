@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 
 const { execFileSync } = require('node:child_process');
-const { launchNewWindow } = require('../lib/vscode-launcher');
 
 function runGit(args, options = {}) {
   try {
@@ -36,50 +35,57 @@ function resolveTarget(input) {
 }
 
 function ensureClean() {
-  if (runGit(['status', '--porcelain'])) fail('working tree has uncommitted changes. Commit or stash them first.');
+  if (runGit(['status', '--porcelain'])) {
+    fail('working tree has uncommitted changes. Commit or stash them first.');
+  }
 }
 
 function currentGhostTarget() {
   const branch = runGit(['branch', '--show-current']);
   const prefix = 'ghost-typing/';
   if (!branch.startsWith(prefix)) fail('current branch is not a ghost-typing branch.');
-  const target = branch.slice(prefix.length);
-  return { targetRef: resolveTarget(target) };
+  return { targetRef: resolveTarget(branch.slice(prefix.length)) };
+}
+
+function branchExists(name) {
+  try {
+    runGit(['show-ref', '--verify', '--quiet', `refs/heads/${name}`]);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function start(targetInput) {
-  const root = runGit(['rev-parse', '--show-toplevel']);
   ensureClean();
+
   const sourceBranch = runGit(['branch', '--show-current']);
   if (!sourceBranch) fail('detached HEAD is not supported.');
-  if (sourceBranch.startsWith('ghost-typing/')) fail(`already on a ghost-typing branch: ${sourceBranch}`);
+  if (sourceBranch.startsWith('ghost-typing/')) {
+    fail(`already on a ghost-typing branch: ${sourceBranch}`);
+  }
 
   const targetRef = resolveTarget(targetInput);
   const workBranch = `ghost-typing/${sanitizeTarget(targetInput)}`;
+  if (branchExists(workBranch)) fail(`branch already exists: ${workBranch}`);
+
   const base = runGit(['merge-base', sourceBranch, targetRef]);
-
-  try {
-    runGit(['show-ref', '--verify', '--quiet', `refs/heads/${workBranch}`]);
-    fail(`branch already exists: ${workBranch}`);
-  } catch (error) {
-    if (String(error.message || '').includes('branch already exists')) throw error;
-  }
-
   runGit(['switch', '-c', workBranch, base], { stdio: 'inherit' });
+
   console.log(`ghost-typing: target = ${targetRef}`);
   console.log(`ghost-typing: base   = ${base.slice(0, 12)}`);
   console.log(`ghost-typing: work   = ${workBranch}`);
-
-  if (!launchNewWindow(root)) {
-    fail('could not open a new VS Code window. Check your VS Code installation.');
-  }
+  console.log('ghost-typing: continue in the current VS Code window.');
 }
 
 function status() {
   const { targetRef } = currentGhostTarget();
   const tracked = runGit(['diff', '--stat', targetRef, '--', '.']);
   const untracked = runGit(['ls-files', '--others', '--exclude-standard']);
-  if (!tracked && !untracked) return console.log(`ghost-typing: working tree appears to match ${targetRef}`);
+  if (!tracked && !untracked) {
+    console.log(`ghost-typing: working tree appears to match ${targetRef}`);
+    return;
+  }
   if (tracked) console.log(tracked);
   if (untracked) console.log(`Untracked files:\n${untracked}`);
 }
@@ -89,7 +95,9 @@ function commit(message) {
   const { targetRef } = currentGhostTarget();
   runGit(['add', '-A'], { stdio: 'inherit' });
   const stagedNames = runGit(['diff', '--cached', '--name-only', targetRef, '--', '.']);
-  if (stagedNames) fail(`target does not match yet. Remaining files:\n${stagedNames}`, 2);
+  if (stagedNames) {
+    fail(`target does not match yet. Remaining files:\n${stagedNames}`, 2);
+  }
   runGit(['commit', '-m', message], { stdio: 'inherit' });
 }
 
