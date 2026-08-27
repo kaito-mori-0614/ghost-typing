@@ -1,11 +1,10 @@
 const { spawnSync } = require('node:child_process');
-const { candidateCommands } = require('../lib/vscode-launcher');
 
 const extensionId = 'kaito-mori-0614.ghost-typing';
-const expectedVersion = '0.1.2';
+const expectedVersion = '0.1.3';
 
-function run(command, args) {
-  return spawnSync(command, args, {
+function run(args) {
+  return spawnSync('code', args, {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     shell: false,
@@ -13,32 +12,24 @@ function run(command, args) {
   });
 }
 
-for (const command of candidateCommands()) {
-  const probe = run(command, ['--version']);
-  if (probe.error || probe.status !== 0) continue;
+run(['--uninstall-extension', extensionId]);
 
-  console.log(`ghost-typing: using VS Code CLI: ${command}`);
+const install = run(['--install-extension', 'ghost-typing.vsix', '--force']);
+if (install.stdout) process.stdout.write(install.stdout);
+if (install.stderr) process.stderr.write(install.stderr);
+if (install.error || install.status !== 0) {
+  console.error('ghost-typing: extension install failed.');
+  process.exit(1);
+}
 
-  run(command, ['--uninstall-extension', extensionId]);
+const list = run(['--list-extensions', '--show-versions']);
+const installed = String(list.stdout || '')
+  .split(/\r?\n/)
+  .find(line => line.toLowerCase().startsWith(`${extensionId}@`.toLowerCase()));
 
-  const install = run(command, ['--install-extension', 'ghost-typing.vsix', '--force']);
-  if (install.stdout) process.stdout.write(install.stdout);
-  if (install.stderr) process.stderr.write(install.stderr);
-  if (install.error || install.status !== 0) continue;
-
-  const list = run(command, ['--list-extensions', '--show-versions']);
-  const installed = String(list.stdout || '')
-    .split(/\r?\n/)
-    .find(line => line.toLowerCase().startsWith(`${extensionId}@`.toLowerCase()));
-
-  if (installed === `${extensionId}@${expectedVersion}`) {
-    console.log(`ghost-typing: verified ${installed}`);
-    process.exit(0);
-  }
-
-  console.error(`ghost-typing: install verification failed. Expected ${extensionId}@${expectedVersion}, got ${installed || 'not installed'}`);
+if (installed !== `${extensionId}@${expectedVersion}`) {
+  console.error(`ghost-typing: expected ${extensionId}@${expectedVersion}, got ${installed || 'not installed'}`);
   process.exit(2);
 }
 
-console.error('ghost-typing: could not find a working VS Code CLI.');
-process.exit(1);
+console.log(`ghost-typing: verified ${installed}`);
