@@ -39,7 +39,8 @@ ghost-typing ai-output
 1. 現在branchと`ai-output`のmerge-baseを探す
 2. merge-baseから`ghost-typing/ai-output`を作る
 3. そのbranchへswitchする
-4. VS Codeを開く
+
+VS Codeは新しく起動しません。今開いているVS Codeをそのまま使います。
 
 VS Code拡張は現在branch名からtargetを自動判定します。設定ファイルやセッション状態はありません。
 
@@ -49,7 +50,7 @@ VS Code拡張は現在branch名からtargetを自動判定します。設定フ�
 - 置換箇所: 消すべき既存コードを薄い取り消し線で表示。消すと置換後コードがghost textになる
 - 新規ファイル: 空ファイルを自動作成し、target内容をghost textとして表示
 
-入力に合わせてghost textは更新されます。
+一度に扱うのは最初の小さな差分だけです。入力に合わせて次のghost textへ進みます。
 
 必要ならCommand Paletteから次も実行できます。
 
@@ -72,10 +73,7 @@ ghost-typing commit "implement step2"
 ```
 
 内部では現在のworking treeをstageしてtarget branchと比較します。
-
-完全一致していればcommitします。
-
-一致していなければcommitせず、残っているファイル名を表示します。
+完全一致していればcommitし、一致していなければcommitしません。
 
 ## branch構成
 
@@ -91,7 +89,7 @@ A---B-----------+
 
 `ghost-typing/ai-output`は`B`から作成され、自分のタイピングで最終的に`ai-output`と同じファイル内容へ到達します。
 
-## v0.1の方針
+## 方針
 
 意図的に入れていません。
 
@@ -102,9 +100,6 @@ A---B-----------+
 - Trace Ledger
 - セッションJSON
 - Tab/Paste禁止
+- VS Codeの新規Window起動制御
 
 現在のコードとtarget branchだけを使います。
-
-## 現在の制限
-
-v0.1は追加・変更・新規ファイルを主対象にしています。target側でファイルそのものを削除する変更は、まだghost操作として扱いません。
