@@ -1,4 +1,4 @@
-const { spawnSync } = require('node:child_process');
+const { execFileSync, execSync } = require('node:child_process');
 const path = require('node:path');
 
 const pkg = require('../package.json');
@@ -6,62 +6,43 @@ const extensionId = `${pkg.publisher}.${pkg.name}`;
 const expected = `${extensionId}@${pkg.version}`;
 const vsix = path.resolve(__dirname, '..', 'ghost-typing.vsix');
 
-function fail(message) {
+function fail(message, error) {
   console.error(`ghost-typing: ${message}`);
+  if (error?.stdout) process.stderr.write(String(error.stdout));
+  if (error?.stderr) process.stderr.write(String(error.stderr));
   process.exit(1);
 }
 
 function runCode(args) {
-  if (process.platform === 'win32') {
-    const where = spawnSync('where.exe', ['code.cmd'], { encoding: 'utf8', shell: false });
-    if (where.error || where.status !== 0) fail('code.cmd was not found in PATH.');
-
-    const codeCmd = String(where.stdout || '').split(/\r?\n/).find(Boolean);
-    if (!codeCmd) fail('code.cmd was not found in PATH.');
-
-    const comspec = process.env.ComSpec || 'C:\\Windows\\System32\\cmd.exe';
-    const quotedArgs = args.map(arg => `"${String(arg).replace(/"/g, '""')}"`).join(' ');
-    const commandLine = `call "${codeCmd}" ${quotedArgs}`;
-
-    return {
-      command: codeCmd,
-      result: spawnSync(comspec, ['/d', '/s', '/c', commandLine], {
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        shell: false,
-        windowsHide: true
-      })
-    };
+  try {
+    if (process.platform === 'win32') {
+      const quote = value => `"${String(value).replace(/"/g, '""')}"`;
+      const command = ['code', ...args].map(quote).join(' ');
+      return execSync(command, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    }
+    return execFileSync('code', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (error) {
+    throw error;
   }
-
-  return {
-    command: 'code',
-    result: spawnSync('code', args, {
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: false
-    })
-  };
 }
 
-const probe = runCode(['--version']);
-if (probe.result.error || probe.result.status !== 0) fail('VS Code CLI probe failed.');
-console.log(`ghost-typing: VS Code CLI ${probe.command}`);
-console.log(`ghost-typing: source      ${expected}`);
+console.log(`ghost-typing: source ${expected}`);
 
-const uninstall = runCode(['--uninstall-extension', extensionId]);
-if (uninstall.result.stdout) process.stdout.write(uninstall.result.stdout);
-if (uninstall.result.stderr) process.stderr.write(uninstall.result.stderr);
+try {
+  const output = runCode(['--install-extension', vsix, '--force']);
+  if (output) process.stdout.write(output);
+} catch (error) {
+  fail('extension install failed.', error);
+}
 
-const install = runCode(['--install-extension', vsix, '--force']);
-if (install.result.stdout) process.stdout.write(install.result.stdout);
-if (install.result.stderr) process.stderr.write(install.result.stderr);
-if (install.result.error || install.result.status !== 0) fail('extension install failed.');
+let list;
+try {
+  list = runCode(['--list-extensions', '--show-versions']);
+} catch (error) {
+  fail('could not verify installed extension.', error);
+}
 
-const list = runCode(['--list-extensions', '--show-versions']);
-if (list.result.error || list.result.status !== 0) fail('could not verify installed extension.');
-
-const installed = String(list.result.stdout || '')
+const installed = String(list || '')
   .split(/\r?\n/)
   .find(line => line.toLowerCase().startsWith(`${extensionId}@`.toLowerCase()));
 
@@ -69,4 +50,4 @@ if (installed !== expected) {
   fail(`install verification failed. Expected ${expected}, got ${installed || 'not installed'}.`);
 }
 
-console.log(`ghost-typing: verified    ${installed}`);
+console.log(`ghost-typing: verified ${installed}`);
