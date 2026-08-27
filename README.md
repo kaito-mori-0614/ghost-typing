@@ -4,11 +4,11 @@
 
 LLMやOllamaは使いません。Git上のtarget branchを正解として使います。
 
-## 1回だけのセットアップ
+## セットアップ
 
 Node.js 20以上とVS Codeの`code`コマンドが使える状態で、このリポジトリをcloneします。
 
-### PowerShell
+### 初回
 
 ```powershell
 git clone https://github.com/kaito-mori-0614/ghost-typing.git
@@ -17,12 +17,34 @@ npm.cmd install
 npm.cmd run install:all
 ```
 
-`install:all`は次の2つを行います。
+### 更新時
+
+必ずGitHubの`main`へ更新してから再インストールします。
+
+```powershell
+cd D:\ghost-typing
+git pull --ff-only origin main
+npm.cmd install
+npm.cmd run install:all
+```
+
+`install:all`は開始時に次を検査します。
+
+- 現在branchが`main`
+- working treeがclean
+- `HEAD`と`origin/main`が完全一致
+
+古いソースやローカル変更がある場合は、VSIXを作る前に停止します。
+
+その後、次を行います。
 
 - `ghost-typing` CLIをグローバルにlink
-- VS Code拡張を`.vsix`化してインストール
+- VS Code拡張を`.vsix`化
+- 既存のghost-typing拡張をアンインストール
+- 新しいVSIXをインストール
+- `package.json`のversionと実際にインストールされたversionが一致することを検証
 
-以後、別のGitリポジトリでも`ghost-typing`コマンドを使えます。
+WindowsではVS CodeのGUI本体`Code.exe`は使用せず、PATH上の`code.cmd`だけをCLIとして使用します。
 
 ## 使い方
 
@@ -31,7 +53,7 @@ AIが完成コードを`ai-output`ブランチへcommit済みだとします。
 AI実装前側のブランチへ移動して、次を実行します。
 
 ```powershell
-ghost-typing ai-output
+ghost-typing.cmd ai-output
 ```
 
 自動で次を行います。
@@ -61,7 +83,7 @@ ghost-typing: Go to Next Change
 ## 状態確認
 
 ```powershell
-ghost-typing status
+ghost-typing.cmd status
 ```
 
 ## commit
@@ -69,7 +91,7 @@ ghost-typing status
 全部なぞり終えたら、次を使います。
 
 ```powershell
-ghost-typing commit "implement step2"
+ghost-typing.cmd commit "implement step2"
 ```
 
 内部では現在のworking treeをstageしてtarget branchと比較します。
