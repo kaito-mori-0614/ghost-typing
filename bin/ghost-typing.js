@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { execFileSync, spawnSync } = require('node:child_process');
+const { execFileSync } = require('node:child_process');
 
 function runGit(args, options = {}) {
   try {
@@ -40,32 +40,6 @@ function ensureClean() {
   if (status) fail('working tree has uncommitted changes. Commit or stash them first.');
 }
 
-function firstChangedFile(targetRef) {
-  const output = runGit(['diff', '--name-status', 'HEAD', targetRef, '--', '.']);
-  for (const line of output.split('\n')) {
-    if (!line) continue;
-    const [status, ...rest] = line.split('\t');
-    if (status.startsWith('D')) continue;
-    const file = rest[rest.length - 1];
-    if (file) return file;
-  }
-  return null;
-}
-
-function openCode(targetRef) {
-  const firstFile = firstChangedFile(targetRef);
-  const args = firstFile
-    ? ['--new-window', '.', '-g', `${firstFile}:1`]
-    : ['--new-window', '.'];
-  const result = spawnSync('code', args, {
-    stdio: 'inherit',
-    shell: process.platform === 'win32'
-  });
-  if (result.error) {
-    console.warn('ghost-typing: VS Code could not be opened automatically. Run `code --new-window .` manually.');
-  }
-}
-
 function currentGhostTarget() {
   const branch = runGit(['branch', '--show-current']);
   const prefix = 'ghost-typing/';
@@ -101,8 +75,7 @@ function start(targetInput) {
   console.log(`ghost-typing: target = ${targetRef}`);
   console.log(`ghost-typing: base   = ${base.slice(0, 12)}`);
   console.log(`ghost-typing: work   = ${workBranch}`);
-  console.log('ghost-typing: opening VS Code...');
-  openCode(targetRef);
+  console.log('ghost-typing: ready. Continue in the current VS Code window.');
 }
 
 function status() {
