@@ -1,5 +1,5 @@
-const { execFileSync, execSync } = require('node:child_process');
 const path = require('node:path');
+const { resolveWindowsCodeLauncher, runCode } = require('../lib/vscode-cli');
 
 const pkg = require('../package.json');
 const extensionId = `${pkg.publisher}.${pkg.name}`;
@@ -10,23 +10,20 @@ function fail(message, error) {
   console.error(`ghost-typing: ${message}`);
   if (error?.stdout) process.stderr.write(String(error.stdout));
   if (error?.stderr) process.stderr.write(String(error.stderr));
+  if (error?.message && !error?.stderr) process.stderr.write(`${error.message}\n`);
   process.exit(1);
 }
 
-function runCode(args) {
+console.log(`ghost-typing: source ${expected}`);
+
+if (process.platform === 'win32') {
   try {
-    if (process.platform === 'win32') {
-      const quote = value => `"${String(value).replace(/"/g, '""')}"`;
-      const command = ['code', ...args].map(quote).join(' ');
-      return execSync(command, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
-    }
-    return execFileSync('code', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    const launcher = resolveWindowsCodeLauncher();
+    console.log(`ghost-typing: VS Code CLI ${launcher.codeCmd}`);
   } catch (error) {
-    throw error;
+    fail('VS Code CLI discovery failed.', error);
   }
 }
-
-console.log(`ghost-typing: source ${expected}`);
 
 try {
   const output = runCode(['--install-extension', vsix, '--force']);
@@ -51,3 +48,4 @@ if (installed !== expected) {
 }
 
 console.log(`ghost-typing: verified ${installed}`);
+console.log('ghost-typing: if VS Code is already open, run "Developer: Reload Window" once.');
