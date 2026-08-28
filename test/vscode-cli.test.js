@@ -12,28 +12,26 @@ function fakeFs(files) {
   return {
     existsSync(file) {
       return map.has(path.normalize(file));
-    },
-    readFileSync(file) {
-      const value = map.get(path.normalize(file));
-      if (value == null) throw new Error('ENOENT');
-      return value;
     }
   };
 }
 
 const windowsTest = process.platform === 'win32' ? test : test.skip;
 
-windowsTest('finds VS Code code.cmd from PATH without shell resolution', () => {
+windowsTest('resolves a standard VS Code install without parsing code.cmd contents', () => {
   const root = 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code';
   const cmd = path.join(root, 'bin', 'code.cmd');
   const exe = path.join(root, 'Code.exe');
   const cli = path.join(root, 'resources', 'app', 'out', 'cli.js');
   const fsApi = fakeFs({
-    [cmd]: '@echo off\r\n"%~dp0..\\Code.exe" "%~dp0..\\resources\\app\\out\\cli.js" %*\r\n',
+    [cmd]: 'opaque launcher text that may change between VS Code versions',
     [exe]: '',
     [cli]: ''
   });
-  const env = { Path: `C:\\tools;${path.join(root, 'bin')}` };
+  const env = {
+    LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+    Path: 'D:\\project\\node_modules\\.bin;C:\\tools'
+  };
 
   const launcher = resolveWindowsCodeLauncher(env, fsApi);
   assert.equal(path.normalize(launcher.codeCmd), path.normalize(cmd));
@@ -41,15 +39,37 @@ windowsTest('finds VS Code code.cmd from PATH without shell resolution', () => {
   assert.equal(path.normalize(launcher.cli), path.normalize(cli));
 });
 
-windowsTest('rejects a code.cmd that is not the VS Code CLI', () => {
+windowsTest('prefers standard VS Code location over npm PATH shadow', () => {
+  const root = 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code';
+  const cmd = path.join(root, 'bin', 'code.cmd');
+  const exe = path.join(root, 'Code.exe');
+  const cli = path.join(root, 'resources', 'app', 'out', 'cli.js');
+  const shadow = 'D:\\project\\node_modules\\.bin\\code.cmd';
+  const fsApi = fakeFs({
+    [shadow]: '',
+    [cmd]: '',
+    [exe]: '',
+    [cli]: ''
+  });
+  const env = {
+    LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+    Path: 'D:\\project\\node_modules\\.bin;C:\\tools'
+  };
+
+  const launcher = resolveWindowsCodeLauncher(env, fsApi);
+  assert.equal(path.normalize(launcher.codeCmd), path.normalize(cmd));
+});
+
+windowsTest('rejects a stray code.cmd without a VS Code installation layout', () => {
   const cmd = 'C:\\tools\\code.cmd';
-  const fsApi = fakeFs({ [cmd]: '@echo off\r\necho not vscode\r\n' });
+  const fsApi = fakeFs({ [cmd]: '' });
   assert.equal(inspectWindowsCodeCmd(cmd, fsApi), null);
 });
 
 windowsTest('explicit GHOST_TYPING_CODE_CMD is checked first', () => {
   const env = {
     GHOST_TYPING_CODE_CMD: '"C:\\VS Code\\bin\\code.cmd"',
+    LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
     Path: 'C:\\other'
   };
   const candidates = windowsCodeCmdCandidates(env);
