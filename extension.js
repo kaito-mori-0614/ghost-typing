@@ -7,7 +7,10 @@ const {
   inputLinesFromUnifiedDiff,
   scaffoldForTarget,
   mismatchRanges,
-  firstMismatchIndex
+  firstMismatchIndex,
+  remainingTarget,
+  visualColumn,
+  ghostDisplayText
 } = require('./lib/ghost-diff');
 
 function git(cwd, args) {
@@ -86,10 +89,7 @@ async function ensureTargetFiles(root, targetRef) {
 
 async function replaceDocumentText(editor, text) {
   const document = editor.document;
-  const fullRange = new vscode.Range(
-    document.positionAt(0),
-    document.positionAt(document.getText().length)
-  );
+  const fullRange = new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length));
   const ok = await editor.edit(editBuilder => editBuilder.replace(fullRange, text), {
     undoStopBefore: true,
     undoStopAfter: true
@@ -100,9 +100,7 @@ async function replaceDocumentText(editor, text) {
 }
 
 function documentLines(document) {
-  const lines = [];
-  for (let i = 0; i < document.lineCount; i += 1) lines.push(document.lineAt(i).text);
-  return lines;
+  return Array.from({ length: document.lineCount }, (_, i) => document.lineAt(i).text);
 }
 
 function structurallyCompatible(lines, targetLines, inputLines) {
@@ -120,17 +118,13 @@ function activate(context) {
   const invalidWarnings = new Set();
 
   const ghostDecoration = vscode.window.createTextEditorDecorationType({
-    after: {
-      color: new vscode.ThemeColor('editorGhostText.foreground')
-    },
+    after: { color: new vscode.ThemeColor('editorGhostText.foreground') },
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed
   });
-
   const errorBackgroundDecoration = vscode.window.createTextEditorDecorationType({
     backgroundColor: 'rgba(255, 0, 0, 0.10)',
     borderRadius: '2px'
   });
-
   const diagnostics = vscode.languages.createDiagnosticCollection('ghost-typing');
   context.subscriptions.push(ghostDecoration, errorBackgroundDecoration, diagnostics);
 
@@ -162,12 +156,10 @@ function activate(context) {
     const currentText = normalizeText(document.getText());
 
     if ((forceReset || currentText === baseText) && currentText !== scaffold.text) {
-      const replaced = await replaceDocumentText(editor, scaffold.text);
-      if (!replaced) return null;
+      if (!await replaceDocumentText(editor, scaffold.text)) return null;
     }
 
-    const currentLines = documentLines(document);
-    const compatible = structurallyCompatible(currentLines, scaffold.targetLines, inputLines);
+    const compatible = structurallyCompatible(documentLines(document), scaffold.targetLines, inputLines);
     const session = {
       root,
       targetRef,
@@ -187,7 +179,6 @@ function activate(context) {
         );
       }
     }
-
     return session;
   }
 
@@ -210,12 +201,17 @@ function activate(context) {
     return promise;
   }
 
-  function expectedLine(session, lineNumber) {
-    return session.targetLines[lineNumber] ?? '';
-  }
+  const expectedLine = (session, lineNumber) => session.targetLines[lineNumber] ?? '';
 
-  function isInputLine(session, lineNumber) {
-    return session.inputLines.has(lineNumber);
+  function updateContexts(editor, session) {
+    const active = Boolean(editor && session && !session.invalid && session.inputLines.size > 0);
+    const lineNumber = editor?.selection?.active?.line ?? -1;
+    vscode.commands.executeCommand('setContext', 'ghostTyping.active', active);
+    vscode.commands.executeCommand(
+      'setContext',
+      'ghostTyping.cursorOnInputLine',
+      active && session.inputLines.has(lineNumber)
+    );
   }
 
   function refreshEditor(editor, session) {
@@ -238,18 +234,22 @@ function activate(context) {
     const ghostOptions = [];
     const errorRanges = [];
     const fileDiagnostics = [];
+    const tabSize = Number(editor.options.tabSize) || 4;
 
     for (let lineNumber = 0; lineNumber < session.targetLines.length; lineNumber += 1) {
       const actual = document.lineAt(lineNumber).text;
       const expected = expectedLine(session, lineNumber);
 
-      if (isInputLine(session, lineNumber) && actual.length < expected.length) {
-        const suffix = expected.slice(actual.length);
+      if (session.inputLines.has(lineNumber)) {
+        const suffix = remainingTarget(actual, expected);
         if (suffix) {
           const pos = new vscode.Position(lineNumber, actual.length);
+          const startColumn = visualColumn(actual, tabSize);
           ghostOptions.push({
             range: new vscode.Range(pos, pos),
-            renderOptions: { after: { contentText: suffix } }
+            renderOptions: {
+              after: { contentText: ghostDisplayText(suffix, startColumn, tabSize) }
+            }
           });
         }
       }
@@ -260,12 +260,12 @@ function activate(context) {
           new vscode.Position(lineNumber, mismatch.end)
         );
         errorRanges.push(range);
-
         const expectedPart = expected.slice(mismatch.start, mismatch.end);
-        const message = expectedPart
-          ? `ghost-typing: expected "${expectedPart}"`
-          : 'ghost-typing: expected end of line';
-        const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error);
+        const diagnostic = new vscode.Diagnostic(
+          range,
+          expectedPart ? `ghost-typing: expected "${expectedPart}"` : 'ghost-typing: expected end of line',
+          vscode.DiagnosticSeverity.Error
+        );
         diagnostic.source = 'ghost-typing';
         fileDiagnostics.push(diagnostic);
       }
@@ -275,22 +275,6 @@ function activate(context) {
     editor.setDecorations(errorBackgroundDecoration, errorRanges);
     diagnostics.set(document.uri, fileDiagnostics);
     hideNativeInlineSuggestion();
-  }
-
-  async function refreshActiveEditor() {
-    const editor = vscode.window.activeTextEditor;
-    if (!editor) return;
-    const session = await ensureSession(editor);
-    refreshEditor(editor, session);
-    updateContexts(editor, session);
-  }
-
-  function updateContexts(editor, session) {
-    const active = Boolean(editor && session && !session.invalid && session.inputLines.size > 0);
-    const lineNumber = editor?.selection?.active?.line ?? -1;
-    const cursorOnInputLine = active && session.inputLines.has(lineNumber);
-    vscode.commands.executeCommand('setContext', 'ghostTyping.active', active);
-    vscode.commands.executeCommand('setContext', 'ghostTyping.cursorOnInputLine', cursorOnInputLine);
   }
 
   function incompleteInputLines(editor, session) {
@@ -317,12 +301,19 @@ function activate(context) {
       vscode.window.setStatusBarMessage(`ghost-typing: ${session.relPath} matches ${session.targetRef}`, 2500);
       return false;
     }
-
     const currentLine = editor.selection.active.line;
     let next = incomplete.find(line => includeCurrent ? line >= currentLine : line > currentLine);
     if (next == null) next = incomplete[0];
     moveCursorToInputLine(editor, session, next);
     return true;
+  }
+
+  async function refreshActiveEditor() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const session = await ensureSession(editor);
+    refreshEditor(editor, session);
+    updateContexts(editor, session);
   }
 
   context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.nextChange', async () => {
@@ -355,14 +346,10 @@ function activate(context) {
     const actual = editor.document.lineAt(lineNumber).text;
     const expected = expectedLine(session, lineNumber);
     if (actual !== expected) {
-      const mismatch = firstMismatchIndex(actual, expected);
-      const character = mismatch < 0 ? actual.length : Math.min(mismatch, actual.length);
-      const pos = new vscode.Position(lineNumber, character);
-      editor.selection = new vscode.Selection(pos, pos);
+      moveCursorToInputLine(editor, session, lineNumber);
       vscode.window.setStatusBarMessage('ghost-typing: この行はまだtargetと一致していません', 1800);
       return;
     }
-
     goToNextInput(editor, session, false);
   }));
 
@@ -430,7 +417,6 @@ function activate(context) {
         );
       }
     }
-
     refreshEditor(editor, session);
     updateContexts(editor, session);
   }));
@@ -451,5 +437,4 @@ function activate(context) {
 }
 
 function deactivate() {}
-
 module.exports = { activate, deactivate };
