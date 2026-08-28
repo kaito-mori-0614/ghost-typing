@@ -2,68 +2,64 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('node:path');
 const {
-  inspectWindowsCodeCmd,
+  probeWindowsCodeCmd,
   resolveWindowsCodeLauncher,
   windowsCodeCmdCandidates
 } = require('../lib/vscode-cli');
 
-function fakeFs(files) {
-  const map = new Map(Object.entries(files).map(([key, value]) => [path.normalize(key), value]));
+function fakeFs(existing) {
+  const set = new Set(existing.map(item => path.normalize(item)));
   return {
     existsSync(file) {
-      return map.has(path.normalize(file));
+      return set.has(path.normalize(file));
     }
   };
 }
 
 const windowsTest = process.platform === 'win32' ? test : test.skip;
 
-windowsTest('resolves a standard VS Code install without parsing code.cmd contents', () => {
+windowsTest('resolves a standard VS Code code.cmd by probing --version', () => {
   const root = 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code';
   const cmd = path.join(root, 'bin', 'code.cmd');
-  const exe = path.join(root, 'Code.exe');
-  const cli = path.join(root, 'resources', 'app', 'out', 'cli.js');
-  const fsApi = fakeFs({
-    [cmd]: 'opaque launcher text that may change between VS Code versions',
-    [exe]: '',
-    [cli]: ''
-  });
+  const fsApi = fakeFs([cmd]);
   const env = {
     LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+    ComSpec: 'C:\\Windows\\System32\\cmd.exe',
     Path: 'D:\\project\\node_modules\\.bin;C:\\tools'
   };
+  const execFile = (_exe, args) => {
+    const command = args[args.length - 1];
+    assert.match(command, /code\.cmd/i);
+    assert.match(command, /--version/);
+    return '1.133.0\r\nabcdef\r\nx64\r\n';
+  };
 
-  const launcher = resolveWindowsCodeLauncher(env, fsApi);
+  const launcher = resolveWindowsCodeLauncher(env, fsApi, execFile);
   assert.equal(path.normalize(launcher.codeCmd), path.normalize(cmd));
-  assert.equal(path.normalize(launcher.executable), path.normalize(exe));
-  assert.equal(path.normalize(launcher.cli), path.normalize(cli));
+  assert.equal(launcher.version, '1.133.0');
 });
 
 windowsTest('prefers standard VS Code location over npm PATH shadow', () => {
   const root = 'C:\\Users\\me\\AppData\\Local\\Programs\\Microsoft VS Code';
   const cmd = path.join(root, 'bin', 'code.cmd');
-  const exe = path.join(root, 'Code.exe');
-  const cli = path.join(root, 'resources', 'app', 'out', 'cli.js');
   const shadow = 'D:\\project\\node_modules\\.bin\\code.cmd';
-  const fsApi = fakeFs({
-    [shadow]: '',
-    [cmd]: '',
-    [exe]: '',
-    [cli]: ''
-  });
+  const fsApi = fakeFs([cmd, shadow]);
   const env = {
     LOCALAPPDATA: 'C:\\Users\\me\\AppData\\Local',
+    ComSpec: 'C:\\Windows\\System32\\cmd.exe',
     Path: 'D:\\project\\node_modules\\.bin;C:\\tools'
   };
+  const execFile = () => '1.133.0\r\nabcdef\r\nx64\r\n';
 
-  const launcher = resolveWindowsCodeLauncher(env, fsApi);
+  const launcher = resolveWindowsCodeLauncher(env, fsApi, execFile);
   assert.equal(path.normalize(launcher.codeCmd), path.normalize(cmd));
 });
 
-windowsTest('rejects a stray code.cmd without a VS Code installation layout', () => {
+windowsTest('rejects an existing batch file whose --version output is not VS Code', () => {
   const cmd = 'C:\\tools\\code.cmd';
-  const fsApi = fakeFs({ [cmd]: '' });
-  assert.equal(inspectWindowsCodeCmd(cmd, fsApi), null);
+  const fsApi = fakeFs([cmd]);
+  const execFile = () => 'not vscode\r\n';
+  assert.equal(probeWindowsCodeCmd(cmd, { fsApi, execFile, env: { ComSpec: 'cmd.exe' } }), null);
 });
 
 windowsTest('explicit GHOST_TYPING_CODE_CMD is checked first', () => {
