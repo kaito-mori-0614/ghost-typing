@@ -27,8 +27,10 @@ windowsTest('resolves a standard VS Code code.cmd by probing --version', () => {
     ComSpec: 'C:\\Windows\\System32\\cmd.exe',
     Path: 'D:\\project\\node_modules\\.bin;C:\\tools'
   };
-  const execFile = (_exe, args) => {
-    const command = args[args.length - 1];
+  const execFile = (_exe, args, options) => {
+    assert.deepEqual(args.slice(0, 3), ['/d', '/s', '/c']);
+    assert.equal(options.windowsVerbatimArguments, true);
+    const command = args[3];
     assert.match(command, /code\.cmd/i);
     assert.match(command, /--version/);
     return '1.133.0\r\nabcdef\r\nx64\r\n';
@@ -59,7 +61,9 @@ windowsTest('rejects an existing batch file whose --version output is not VS Cod
   const cmd = 'C:\\tools\\code.cmd';
   const fsApi = fakeFs([cmd]);
   const execFile = () => 'not vscode\r\n';
-  assert.equal(probeWindowsCodeCmd(cmd, { fsApi, execFile, env: { ComSpec: 'cmd.exe' } }), null);
+  const result = probeWindowsCodeCmd(cmd, { fsApi, execFile, env: { ComSpec: 'cmd.exe' } });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /no VS Code version line/i);
 });
 
 windowsTest('explicit GHOST_TYPING_CODE_CMD is checked first', () => {
