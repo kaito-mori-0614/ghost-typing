@@ -10,7 +10,9 @@ const {
   firstMismatchIndex,
   remainingTarget,
   visualColumn,
-  ghostDisplayText
+  ghostDisplayText,
+  protectedPrefixLength,
+  protectedPrefixRepair
 } = require('./lib/ghost-diff');
 
 function git(cwd, args) {
@@ -116,6 +118,7 @@ function activate(context) {
   const sessions = new Map();
   const initializing = new Map();
   const invalidWarnings = new Set();
+  const repairingIndent = new Set();
 
   const ghostDecoration = vscode.window.createTextEditorDecorationType({
     after: { color: new vscode.ThemeColor('editorGhostText.foreground') },
@@ -214,6 +217,39 @@ function activate(context) {
     );
   }
 
+  async function repairProtectedIndent(editor, session) {
+    if (!editor || !session || session.invalid) return false;
+    const key = editor.document.uri.toString();
+    if (repairingIndent.has(key)) return false;
+
+    const repairs = [];
+    for (const lineNumber of session.inputLines.keys()) {
+      const actual = editor.document.lineAt(lineNumber).text;
+      const expected = expectedLine(session, lineNumber);
+      const repair = protectedPrefixRepair(actual, expected);
+      if (repair) repairs.push({ lineNumber, ...repair });
+    }
+    if (!repairs.length) return false;
+
+    repairingIndent.add(key);
+    try {
+      await editor.edit(editBuilder => {
+        for (const repair of repairs) {
+          editBuilder.replace(
+            new vscode.Range(
+              new vscode.Position(repair.lineNumber, repair.start),
+              new vscode.Position(repair.lineNumber, repair.end)
+            ),
+            repair.text
+          );
+        }
+      }, { undoStopBefore: false, undoStopAfter: false });
+    } finally {
+      repairingIndent.delete(key);
+    }
+    return true;
+  }
+
   function refreshEditor(editor, session) {
     if (!editor || !session || session.invalid) {
       if (editor) {
@@ -287,7 +323,9 @@ function activate(context) {
     const actual = editor.document.lineAt(lineNumber).text;
     const expected = expectedLine(session, lineNumber);
     const mismatch = firstMismatchIndex(actual, expected);
-    const character = mismatch < 0 ? actual.length : Math.min(mismatch, actual.length);
+    const minCharacter = protectedPrefixLength(expected);
+    const rawCharacter = mismatch < 0 ? actual.length : Math.min(mismatch, actual.length);
+    const character = Math.max(minCharacter, rawCharacter);
     const pos = new vscode.Position(lineNumber, character);
     editor.selection = new vscode.Selection(pos, pos);
     editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
@@ -312,6 +350,7 @@ function activate(context) {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
     const session = await ensureSession(editor);
+    await repairProtectedIndent(editor, session);
     refreshEditor(editor, session);
     updateContexts(editor, session);
   }
@@ -356,15 +395,50 @@ function activate(context) {
   context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.backspace', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
-    if (!editor.selection.isEmpty || editor.selection.active.character > 0) {
+    const session = await ensureSession(editor);
+    if (!session || session.invalid) return;
+
+    const selection = editor.selection;
+    const lineNumber = selection.active.line;
+    if (!session.inputLines.has(lineNumber)) {
       await vscode.commands.executeCommand('deleteLeft');
+      return;
     }
+
+    const protectedLength = protectedPrefixLength(expectedLine(session, lineNumber));
+    if (selection.isEmpty) {
+      if (selection.active.character <= protectedLength) return;
+      await vscode.commands.executeCommand('deleteLeft');
+      return;
+    }
+
+    if (selection.start.line !== lineNumber || selection.end.line !== lineNumber) return;
+    const start = Math.max(selection.start.character, protectedLength);
+    const end = selection.end.character;
+    if (end <= start) return;
+    await editor.edit(editBuilder => {
+      editBuilder.delete(new vscode.Range(
+        new vscode.Position(lineNumber, start),
+        new vscode.Position(lineNumber, end)
+      ));
+    });
   }));
 
   context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.delete', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
-    const line = editor.document.lineAt(editor.selection.active.line);
+    const session = await ensureSession(editor);
+    if (!session || session.invalid) return;
+    const lineNumber = editor.selection.active.line;
+    if (session.inputLines.has(lineNumber)) {
+      const protectedLength = protectedPrefixLength(expectedLine(session, lineNumber));
+      if (editor.selection.isEmpty && editor.selection.active.character < protectedLength) {
+        const pos = new vscode.Position(lineNumber, protectedLength);
+        editor.selection = new vscode.Selection(pos, pos);
+        return;
+      }
+    }
+    const line = editor.document.lineAt(lineNumber);
     if (!editor.selection.isEmpty || editor.selection.active.character < line.text.length) {
       await vscode.commands.executeCommand('deleteRight');
     }
@@ -392,6 +466,7 @@ function activate(context) {
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(async editor => {
     if (!editor) return;
     const session = await ensureSession(editor);
+    await repairProtectedIndent(editor, session);
     refreshEditor(editor, session);
     updateContexts(editor, session);
     if (session && !session.invalid) goToNextInput(editor, session, true);
@@ -399,10 +474,18 @@ function activate(context) {
 
   context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(event => {
     const session = sessions.get(event.textEditor.document.uri.toString());
+    if (session && !session.invalid && session.inputLines.has(event.textEditor.selection.active.line)) {
+      const lineNumber = event.textEditor.selection.active.line;
+      const protectedLength = protectedPrefixLength(expectedLine(session, lineNumber));
+      if (event.textEditor.selection.isEmpty && event.textEditor.selection.active.character < protectedLength) {
+        const pos = new vscode.Position(lineNumber, protectedLength);
+        event.textEditor.selection = new vscode.Selection(pos, pos);
+      }
+    }
     updateContexts(event.textEditor, session);
   }));
 
-  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
+  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(async event => {
     const editor = vscode.window.activeTextEditor;
     if (!editor || editor.document !== event.document) return;
     const session = sessions.get(event.document.uri.toString());
@@ -417,6 +500,7 @@ function activate(context) {
         );
       }
     }
+    if (!session.invalid) await repairProtectedIndent(editor, session);
     refreshEditor(editor, session);
     updateContexts(editor, session);
   }));
