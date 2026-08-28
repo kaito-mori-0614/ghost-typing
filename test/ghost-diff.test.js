@@ -4,7 +4,10 @@ const {
   inputLinesFromUnifiedDiff,
   scaffoldForTarget,
   mismatchRanges,
-  firstMismatchIndex
+  firstMismatchIndex,
+  remainingTarget,
+  visualColumn,
+  ghostDisplayText
 } = require('../lib/ghost-diff');
 
 test('maps every added target line from a zero-context git diff', () => {
@@ -31,11 +34,11 @@ test('maps every added target line from a zero-context git diff', () => {
   ]);
 });
 
-test('builds a target-shaped scaffold and blanks only typing lines', () => {
-  const inputLines = new Map([[1, 'new_a'], [3, 'new_c']]);
-  const scaffold = scaffoldForTarget('keep\nnew_a\nkeep2\nnew_c\n', inputLines);
-  assert.equal(scaffold.text, 'keep\n\nkeep2\n\n');
-  assert.deepEqual(scaffold.targetLines, ['keep', 'new_a', 'keep2', 'new_c', '']);
+test('builds a target-shaped scaffold and preserves leading indentation on typing lines', () => {
+  const inputLines = new Map([[1, '  new_a'], [3, '\tnew_c']]);
+  const scaffold = scaffoldForTarget('keep\n  new_a\nkeep2\n\tnew_c\n', inputLines);
+  assert.equal(scaffold.text, 'keep\n  \nkeep2\n\t\n');
+  assert.deepEqual(scaffold.targetLines, ['keep', '  new_a', 'keep2', '\tnew_c', '']);
 });
 
 test('finds contiguous wrong-character ranges without flagging missing suffix', () => {
@@ -49,6 +52,22 @@ test('finds first mismatch or the first missing/extra character', () => {
   assert.equal(firstMismatchIndex('abX', 'abc'), 2);
   assert.equal(firstMismatchIndex('abcd', 'abc'), 3);
   assert.equal(firstMismatchIndex('abc', 'abc'), -1);
+});
+
+test('advances ghost text only for an exact typed prefix', () => {
+  assert.equal(remainingTarget('', ' parameter'), ' parameter');
+  assert.equal(remainingTarget(' ', ' parameter'), 'parameter');
+  assert.equal(remainingTarget('p', ' parameter'), '');
+  assert.equal(remainingTarget(' paraX', ' parameter'), '');
+  assert.equal(remainingTarget(' parameter', ' parameter'), '');
+});
+
+test('renders spaces and tabs with stable visible width for decorations', () => {
+  assert.equal(visualColumn('ab\t', 4), 4);
+  assert.equal(visualColumn('abcd\t', 4), 8);
+  assert.equal(ghostDisplayText('  x', 0, 4), '\u00a0\u00a0x');
+  assert.equal(ghostDisplayText('\tx', 0, 4), '\u00a0\u00a0\u00a0\u00a0x');
+  assert.equal(ghostDisplayText('\tx', 2, 4), '\u00a0\u00a0x');
 });
 
 test('treats target lines beginning with plus characters as additions inside a hunk', () => {
