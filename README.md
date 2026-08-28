@@ -1,6 +1,6 @@
 # ghost-typing
 
-`ghost-typing`は、別ブランチにある完成コードをVS Codeのghost textとして表示し、自分でそのコードを入力して再現するためのツールです。
+`ghost-typing`は、別ブランチにある完成コードを薄いガイドとしてVS Code上に表示し、自分でそのコードを入力して再現するためのツールです。
 
 LLMやOllamaは使いません。Git上のtarget branchを正解として使います。
 
@@ -34,17 +34,7 @@ npm.cmd run install:all
 - working treeがclean
 - `HEAD`と`origin/main`が完全一致
 
-古いソースやローカル変更がある場合は、VSIXを作る前に停止します。
-
-その後、次を行います。
-
-- `ghost-typing` CLIをグローバルにlink
-- VS Code拡張を`.vsix`化
-- 既存のghost-typing拡張をアンインストール
-- 新しいVSIXをインストール
-- `package.json`のversionと実際にインストールされたversionが一致することを検証
-
-WindowsではVS CodeのGUI本体`Code.exe`は使用せず、PATH上の`code.cmd`だけをCLIとして使用します。
+その後、CLIのlink、VSIX作成、VS Code拡張のインストール、version検証まで行います。
 
 ## 使い方
 
@@ -64,21 +54,67 @@ ghost-typing.cmd ai-output
 
 VS Codeは新しく起動しません。今開いているVS Codeをそのまま使います。
 
-VS Code拡張は現在branch名からtargetを自動判定します。設定ファイルやセッション状態はありません。
+## VS Code上の動き
 
-対象ファイルを開くと最初の差分へ移動します。
+対象ファイルを開くと、`HEAD`とtarget branchのGit diffから、そのファイルで自分が入力する行を確定します。
 
-- 追加箇所: ghost textとして表示
-- 置換箇所: 消すべき既存コードを薄い取り消し線で表示。消すと置換後コードがghost textになる
-- 新規ファイル: 空ファイルを自動作成し、target内容をghost textとして表示
+### 削除は自動
 
-一度に扱うのは最初の小さな差分だけです。入力に合わせて次のghost textへ進みます。
+base側にしかない旧コードは最初に自動で取り除きます。削除位置を探したり、取り消し線をBackspaceで追いかけたりする必要はありません。
 
-必要ならCommand Paletteから次も実行できます。
+### 入力箇所はファイル内に全部表示
+
+target側で追加・変更された行は空の入力行にし、正解文字列をコメントのような薄いghost表示でファイル内に一度に表示します。
+
+```text
+通常コード
+<薄いtarget行>
+通常コード
+<薄いtarget行>
+<薄いtarget行>
+```
+
+入力した文字数だけghost表示が短くなり、正しく入力した文字は通常のVS Codeシンタックスハイライトになります。
+
+VS CodeのInline Completion APIは使用しません。Ghost Typing自身の表示とCopilotのinline suggestionが同じproviderとして混ざる構成にはしていません。Ghost Typing中は表示更新時に現在のnative inline suggestionを閉じます。
+
+### 間違い表示
+
+入力済み文字はtargetの同じ位置と比較します。
+
+間違った文字だけを次の2つで示します。
+
+- VS CodeのError diagnosticによる赤い波線
+- 薄い赤背景
+
+文字色自体は変更しないため、Verilog/SystemVerilogなどのシンタックスハイライトは維持されます。
+
+### Enter / Backspace / Delete
+
+入力行にはtarget用の行が最初から用意されています。
+
+- `Enter`: 現在行がtargetと完全一致したら次の未完了入力行へ移動
+- `Enter`: 未完成・誤入力がある場合はその行に留まる
+- `Backspace`: 行頭では前行と結合しない
+- `Delete`: 行末では次行と結合しない
+
+これにより、入力中に行構造がずれてghost表示位置が移動することを防ぎます。
+
+## コマンド
+
+次の未完了入力行へ移動します。
 
 ```text
 ghost-typing: Go to Next Change
 ```
+
+入力中に改行数を変えたなど、ファイル構造が崩れた場合は現在ファイルだけ入力開始状態へ戻せます。
+
+```text
+ghost-typing: Reset Current File
+```
+
+Resetするとそのファイルで入力した途中経過は失われます。
 
 ## 状態確認
 
@@ -88,14 +124,13 @@ ghost-typing.cmd status
 
 ## commit
 
-全部なぞり終えたら、次を使います。
+全ファイルをなぞり終え、保存した後に次を使います。
 
 ```powershell
 ghost-typing.cmd commit "implement step2"
 ```
 
-内部では現在のworking treeをstageしてtarget branchと比較します。
-完全一致していればcommitし、一致していなければcommitしません。
+内部では現在のworking treeをstageしてtarget branchと比較します。完全一致していればcommitし、一致していなければcommitしません。
 
 ## branch構成
 
@@ -110,18 +145,3 @@ A---B-----------+
 `B`がmerge-baseです。
 
 `ghost-typing/ai-output`は`B`から作成され、自分のタイピングで最終的に`ai-output`と同じファイル内容へ到達します。
-
-## 方針
-
-意図的に入れていません。
-
-- Ollama / LLM
-- Prompt
-- WebView
-- 進捗率
-- Trace Ledger
-- セッションJSON
-- Tab/Paste禁止
-- VS Codeの新規Window起動制御
-
-現在のコードとtarget branchだけを使います。

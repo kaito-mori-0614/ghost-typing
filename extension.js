@@ -2,7 +2,13 @@ const vscode = require('vscode');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const fs = require('node:fs');
-const { firstChange, remainingInsertedTextAtCursor } = require('./lib/ghost-diff');
+const {
+  normalizeText,
+  inputLinesFromUnifiedDiff,
+  scaffoldForTarget,
+  mismatchRanges,
+  firstMismatchIndex
+} = require('./lib/ghost-diff');
 
 function git(cwd, args) {
   return execFileSync('git', args, {
@@ -44,16 +50,16 @@ function relativeGitPath(root, document) {
   return path.relative(root, document.uri.fsPath).split(path.sep).join('/');
 }
 
-function targetText(root, targetRef, relPath) {
+function textAtRef(root, ref, relPath) {
   try {
-    return git(root, ['show', `${targetRef}:${relPath}`]);
+    return normalizeText(git(root, ['show', `${ref}:${relPath}`]));
   } catch {
     return null;
   }
 }
 
-function offsetToPosition(document, offset) {
-  return document.positionAt(Math.max(0, Math.min(offset, document.getText().length)));
+function diffFromHead(root, targetRef, relPath) {
+  return git(root, ['diff', '--unified=0', '--no-color', 'HEAD', targetRef, '--', relPath]);
 }
 
 async function ensureTargetFiles(root, targetRef) {
@@ -78,111 +84,355 @@ async function ensureTargetFiles(root, targetRef) {
   }
 }
 
-async function activate(context) {
-  const deletionDecoration = vscode.window.createTextEditorDecorationType({
-    opacity: '0.45',
-    textDecoration: 'line-through'
+async function replaceDocumentText(editor, text) {
+  const document = editor.document;
+  const fullRange = new vscode.Range(
+    document.positionAt(0),
+    document.positionAt(document.getText().length)
+  );
+  const ok = await editor.edit(editBuilder => editBuilder.replace(fullRange, text), {
+    undoStopBefore: true,
+    undoStopAfter: true
   });
-  context.subscriptions.push(deletionDecoration);
+  if (!ok) return false;
+  await document.save();
+  return true;
+}
 
-  function getChange(editor) {
-    if (!editor) return null;
+function documentLines(document) {
+  const lines = [];
+  for (let i = 0; i < document.lineCount; i += 1) lines.push(document.lineAt(i).text);
+  return lines;
+}
+
+function structurallyCompatible(lines, targetLines, inputLines) {
+  if (lines.length !== targetLines.length) return false;
+  for (let i = 0; i < targetLines.length; i += 1) {
+    if (inputLines.has(i)) continue;
+    if (lines[i] !== targetLines[i]) return false;
+  }
+  return true;
+}
+
+function activate(context) {
+  const sessions = new Map();
+  const initializing = new Map();
+  const invalidWarnings = new Set();
+
+  const ghostDecoration = vscode.window.createTextEditorDecorationType({
+    after: {
+      color: new vscode.ThemeColor('editorGhostText.foreground')
+    },
+    rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed
+  });
+
+  const errorBackgroundDecoration = vscode.window.createTextEditorDecorationType({
+    backgroundColor: 'rgba(255, 0, 0, 0.10)',
+    borderRadius: '2px'
+  });
+
+  const diagnostics = vscode.languages.createDiagnosticCollection('ghost-typing');
+  context.subscriptions.push(ghostDecoration, errorBackgroundDecoration, diagnostics);
+
+  function hideNativeInlineSuggestion() {
+    vscode.commands.executeCommand('editor.action.inlineSuggest.hide').then(undefined, () => {});
+  }
+
+  async function buildSession(editor, forceReset = false) {
+    if (!editor || editor.document.uri.scheme !== 'file') return null;
     const document = editor.document;
     const root = repoRootForDocument(document);
     if (!root) return null;
     const targetRef = targetFromBranch(root);
     if (!targetRef) return null;
     const relPath = relativeGitPath(root, document);
-    const target = targetText(root, targetRef, relPath);
-    if (target == null) return null;
+    const targetText = textAtRef(root, targetRef, relPath);
+    if (targetText == null) return null;
 
-    const current = document.getText().replace(/\r\n/g, '\n');
-    const normalizedTarget = target.replace(/\r\n/g, '\n');
-    return {
+    let diffText;
+    try {
+      diffText = diffFromHead(root, targetRef, relPath);
+    } catch {
+      return null;
+    }
+
+    const inputLines = inputLinesFromUnifiedDiff(diffText);
+    const scaffold = scaffoldForTarget(targetText, inputLines);
+    const baseText = textAtRef(root, 'HEAD', relPath) ?? '';
+    const currentText = normalizeText(document.getText());
+
+    if ((forceReset || currentText === baseText) && currentText !== scaffold.text) {
+      const replaced = await replaceDocumentText(editor, scaffold.text);
+      if (!replaced) return null;
+    }
+
+    const currentLines = documentLines(document);
+    const compatible = structurallyCompatible(currentLines, scaffold.targetLines, inputLines);
+    const session = {
       root,
       targetRef,
       relPath,
-      target: normalizedTarget,
-      change: firstChange(current, normalizedTarget)
+      inputLines,
+      targetLines: scaffold.targetLines,
+      scaffoldText: scaffold.text,
+      invalid: !compatible
     };
+
+    if (!compatible) {
+      const key = document.uri.toString();
+      if (!invalidWarnings.has(key)) {
+        invalidWarnings.add(key);
+        vscode.window.showWarningMessage(
+          'ghost-typing: このファイルの行構造がtargetとずれています。"ghost-typing: Reset Current File"で入力用表示を作り直せます。'
+        );
+      }
+    }
+
+    return session;
   }
 
-  async function refreshDeletion(editor) {
-    if (!editor) return;
-    const info = getChange(editor);
-    if (!info?.change?.removedText) {
-      editor.setDecorations(deletionDecoration, []);
+  async function ensureSession(editor, forceReset = false) {
+    if (!editor) return null;
+    const key = editor.document.uri.toString();
+    if (!forceReset && sessions.has(key)) return sessions.get(key);
+    if (!forceReset && initializing.has(key)) return initializing.get(key);
+
+    const promise = buildSession(editor, forceReset).then(session => {
+      if (session) sessions.set(key, session);
+      else sessions.delete(key);
+      initializing.delete(key);
+      return session;
+    }, error => {
+      initializing.delete(key);
+      throw error;
+    });
+    initializing.set(key, promise);
+    return promise;
+  }
+
+  function expectedLine(session, lineNumber) {
+    return session.targetLines[lineNumber] ?? '';
+  }
+
+  function isInputLine(session, lineNumber) {
+    return session.inputLines.has(lineNumber);
+  }
+
+  function refreshEditor(editor, session) {
+    if (!editor || !session || session.invalid) {
+      if (editor) {
+        editor.setDecorations(ghostDecoration, []);
+        editor.setDecorations(errorBackgroundDecoration, []);
+        diagnostics.delete(editor.document.uri);
+      }
       return;
     }
 
-    const { change } = info;
-    const start = offsetToPosition(editor.document, change.currentOffset);
-    const end = offsetToPosition(editor.document, change.currentOffset + change.removedText.length);
-    editor.setDecorations(deletionDecoration, [new vscode.Range(start, end)]);
-  }
+    const document = editor.document;
+    if (document.lineCount !== session.targetLines.length) {
+      session.invalid = true;
+      refreshEditor(editor, session);
+      return;
+    }
 
-  async function goToFirstChange(editor) {
-    if (!editor) return;
-    const info = getChange(editor);
-    if (!info?.change) return;
+    const ghostOptions = [];
+    const errorRanges = [];
+    const fileDiagnostics = [];
 
-    const pos = offsetToPosition(editor.document, info.change.currentOffset);
-    editor.selection = new vscode.Selection(pos, pos);
-    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
-    await refreshDeletion(editor);
-    await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
-  }
+    for (let lineNumber = 0; lineNumber < session.targetLines.length; lineNumber += 1) {
+      const actual = document.lineAt(lineNumber).text;
+      const expected = expectedLine(session, lineNumber);
 
-  context.subscriptions.push(vscode.languages.registerInlineCompletionItemProvider(
-    [{ scheme: 'file' }],
-    {
-      provideInlineCompletionItems(document, position) {
-        const root = repoRootForDocument(document);
-        if (!root) return [];
-        const targetRef = targetFromBranch(root);
-        if (!targetRef) return [];
-        const relPath = relativeGitPath(root, document);
-        const target = targetText(root, targetRef, relPath);
-        if (target == null) return [];
+      if (isInputLine(session, lineNumber) && actual.length < expected.length) {
+        const suffix = expected.slice(actual.length);
+        if (suffix) {
+          const pos = new vscode.Position(lineNumber, actual.length);
+          ghostOptions.push({
+            range: new vscode.Range(pos, pos),
+            renderOptions: { after: { contentText: suffix } }
+          });
+        }
+      }
 
-        const current = document.getText().replace(/\r\n/g, '\n');
-        const normalizedTarget = target.replace(/\r\n/g, '\n');
-        const cursorOffset = document.offsetAt(position);
-        const insertText = remainingInsertedTextAtCursor(current, normalizedTarget, cursorOffset);
-        if (!insertText) return [];
+      for (const mismatch of mismatchRanges(actual, expected)) {
+        const range = new vscode.Range(
+          new vscode.Position(lineNumber, mismatch.start),
+          new vscode.Position(lineNumber, mismatch.end)
+        );
+        errorRanges.push(range);
 
-        return [new vscode.InlineCompletionItem(
-          insertText,
-          new vscode.Range(position, position)
-        )];
+        const expectedPart = expected.slice(mismatch.start, mismatch.end);
+        const message = expectedPart
+          ? `ghost-typing: expected "${expectedPart}"`
+          : 'ghost-typing: expected end of line';
+        const diagnostic = new vscode.Diagnostic(range, message, vscode.DiagnosticSeverity.Error);
+        diagnostic.source = 'ghost-typing';
+        fileDiagnostics.push(diagnostic);
       }
     }
-  ));
+
+    editor.setDecorations(ghostDecoration, ghostOptions);
+    editor.setDecorations(errorBackgroundDecoration, errorRanges);
+    diagnostics.set(document.uri, fileDiagnostics);
+    hideNativeInlineSuggestion();
+  }
+
+  async function refreshActiveEditor() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const session = await ensureSession(editor);
+    refreshEditor(editor, session);
+    updateContexts(editor, session);
+  }
+
+  function updateContexts(editor, session) {
+    const active = Boolean(editor && session && !session.invalid && session.inputLines.size > 0);
+    const lineNumber = editor?.selection?.active?.line ?? -1;
+    const cursorOnInputLine = active && session.inputLines.has(lineNumber);
+    vscode.commands.executeCommand('setContext', 'ghostTyping.active', active);
+    vscode.commands.executeCommand('setContext', 'ghostTyping.cursorOnInputLine', cursorOnInputLine);
+  }
+
+  function incompleteInputLines(editor, session) {
+    return [...session.inputLines.keys()]
+      .sort((a, b) => a - b)
+      .filter(lineNumber => editor.document.lineAt(lineNumber).text !== expectedLine(session, lineNumber));
+  }
+
+  function moveCursorToInputLine(editor, session, lineNumber) {
+    const actual = editor.document.lineAt(lineNumber).text;
+    const expected = expectedLine(session, lineNumber);
+    const mismatch = firstMismatchIndex(actual, expected);
+    const character = mismatch < 0 ? actual.length : Math.min(mismatch, actual.length);
+    const pos = new vscode.Position(lineNumber, character);
+    editor.selection = new vscode.Selection(pos, pos);
+    editor.revealRange(new vscode.Range(pos, pos), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    updateContexts(editor, session);
+  }
+
+  function goToNextInput(editor, session, includeCurrent = true) {
+    if (!editor || !session || session.invalid) return false;
+    const incomplete = incompleteInputLines(editor, session);
+    if (!incomplete.length) {
+      vscode.window.setStatusBarMessage(`ghost-typing: ${session.relPath} matches ${session.targetRef}`, 2500);
+      return false;
+    }
+
+    const currentLine = editor.selection.active.line;
+    let next = incomplete.find(line => includeCurrent ? line >= currentLine : line > currentLine);
+    if (next == null) next = incomplete[0];
+    moveCursorToInputLine(editor, session, next);
+    return true;
+  }
 
   context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.nextChange', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) return;
-    const info = getChange(editor);
-    if (!info) {
+    const session = await ensureSession(editor);
+    if (!session) {
       vscode.window.showInformationMessage('ghost-typing: no target is active for this file.');
       return;
     }
-    if (!info.change) {
-      vscode.window.showInformationMessage(`ghost-typing: ${info.relPath} matches ${info.targetRef}`);
+    if (session.invalid) {
+      vscode.window.showWarningMessage('ghost-typing: reset this file before continuing.');
       return;
     }
-    await goToFirstChange(editor);
+    goToNextInput(editor, session, true);
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.enter', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const session = await ensureSession(editor);
+    if (!session || session.invalid) return;
+
+    const lineNumber = editor.selection.active.line;
+    if (!session.inputLines.has(lineNumber)) {
+      await vscode.commands.executeCommand('type', { text: '\n' });
+      return;
+    }
+
+    const actual = editor.document.lineAt(lineNumber).text;
+    const expected = expectedLine(session, lineNumber);
+    if (actual !== expected) {
+      const mismatch = firstMismatchIndex(actual, expected);
+      const character = mismatch < 0 ? actual.length : Math.min(mismatch, actual.length);
+      const pos = new vscode.Position(lineNumber, character);
+      editor.selection = new vscode.Selection(pos, pos);
+      vscode.window.setStatusBarMessage('ghost-typing: この行はまだtargetと一致していません', 1800);
+      return;
+    }
+
+    goToNextInput(editor, session, false);
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.backspace', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    if (!editor.selection.isEmpty || editor.selection.active.character > 0) {
+      await vscode.commands.executeCommand('deleteLeft');
+    }
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.delete', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const line = editor.document.lineAt(editor.selection.active.line);
+    if (!editor.selection.isEmpty || editor.selection.active.character < line.text.length) {
+      await vscode.commands.executeCommand('deleteRight');
+    }
+  }));
+
+  context.subscriptions.push(vscode.commands.registerCommand('ghost-typing.resetFile', async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor) return;
+    const choice = await vscode.window.showWarningMessage(
+      'ghost-typing: このファイルを入力開始状態へ戻します。ここまで入力した変更は失われます。',
+      { modal: true },
+      'Reset'
+    );
+    if (choice !== 'Reset') return;
+
+    const key = editor.document.uri.toString();
+    sessions.delete(key);
+    invalidWarnings.delete(key);
+    const session = await ensureSession(editor, true);
+    refreshEditor(editor, session);
+    updateContexts(editor, session);
+    if (session && !session.invalid) goToNextInput(editor, session, true);
   }));
 
   context.subscriptions.push(vscode.window.onDidChangeActiveTextEditor(async editor => {
-    await goToFirstChange(editor);
+    if (!editor) return;
+    const session = await ensureSession(editor);
+    refreshEditor(editor, session);
+    updateContexts(editor, session);
+    if (session && !session.invalid) goToNextInput(editor, session, true);
   }));
 
-  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(async event => {
+  context.subscriptions.push(vscode.window.onDidChangeTextEditorSelection(event => {
+    const session = sessions.get(event.textEditor.document.uri.toString());
+    updateContexts(event.textEditor, session);
+  }));
+
+  context.subscriptions.push(vscode.workspace.onDidChangeTextDocument(event => {
     const editor = vscode.window.activeTextEditor;
-    if (editor?.document !== event.document) return;
-    await refreshDeletion(editor);
-    await vscode.commands.executeCommand('editor.action.inlineSuggest.trigger');
+    if (!editor || editor.document !== event.document) return;
+    const session = sessions.get(event.document.uri.toString());
+    if (!session) return;
+
+    if (event.document.lineCount !== session.targetLines.length) {
+      session.invalid = true;
+      if (!invalidWarnings.has(event.document.uri.toString())) {
+        invalidWarnings.add(event.document.uri.toString());
+        vscode.window.showWarningMessage(
+          'ghost-typing: 改行数が変わりました。"ghost-typing: Reset Current File"で入力用表示を作り直してください。'
+        );
+      }
+    }
+
+    refreshEditor(editor, session);
+    updateContexts(editor, session);
   }));
 
   const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
@@ -190,11 +440,14 @@ async function activate(context) {
     try {
       const root = git(workspaceRoot, ['rev-parse', '--show-toplevel']).trim();
       const targetRef = targetFromBranch(root);
-      if (targetRef) await ensureTargetFiles(root, targetRef);
-    } catch {}
+      if (targetRef) ensureTargetFiles(root, targetRef).then(() => refreshActiveEditor());
+      else refreshActiveEditor();
+    } catch {
+      refreshActiveEditor();
+    }
+  } else {
+    refreshActiveEditor();
   }
-
-  await goToFirstChange(vscode.window.activeTextEditor);
 }
 
 function deactivate() {}

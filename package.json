@@ -2,7 +2,7 @@
   "name": "ghost-typing",
   "displayName": "ghost-typing",
   "publisher": "kaito-mori-0614",
-  "version": "0.1.5",
+  "version": "0.2.0",
   "description": "Trace a target Git branch by typing its changes as VS Code ghost text.",
   "private": true,
   "repository": {
@@ -17,10 +17,16 @@
     "node": ">=20",
     "vscode": "^1.100.0"
   },
-  "extensionKind": ["ui"],
+  "extensionKind": [
+    "ui"
+  ],
   "activationEvents": [
     "onStartupFinished",
-    "onCommand:ghost-typing.nextChange"
+    "onCommand:ghost-typing.nextChange",
+    "onCommand:ghost-typing.resetFile",
+    "onCommand:ghost-typing.enter",
+    "onCommand:ghost-typing.backspace",
+    "onCommand:ghost-typing.delete"
   ],
   "categories": [
     "Other"
@@ -30,6 +36,27 @@
       {
         "command": "ghost-typing.nextChange",
         "title": "ghost-typing: Go to Next Change"
+      },
+      {
+        "command": "ghost-typing.resetFile",
+        "title": "ghost-typing: Reset Current File"
+      }
+    ],
+    "keybindings": [
+      {
+        "key": "enter",
+        "command": "ghost-typing.enter",
+        "when": "editorTextFocus && ghostTyping.cursorOnInputLine"
+      },
+      {
+        "key": "backspace",
+        "command": "ghost-typing.backspace",
+        "when": "editorTextFocus && ghostTyping.cursorOnInputLine"
+      },
+      {
+        "key": "delete",
+        "command": "ghost-typing.delete",
+        "when": "editorTextFocus && ghostTyping.cursorOnInputLine"
       }
     ]
   },
