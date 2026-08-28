@@ -7,7 +7,9 @@ const {
   firstMismatchIndex,
   remainingTarget,
   visualColumn,
-  ghostDisplayText
+  ghostDisplayText,
+  protectedPrefixLength,
+  protectedPrefixRepair
 } = require('../lib/ghost-diff');
 
 test('maps every added target line from a zero-context git diff', () => {
@@ -68,6 +70,22 @@ test('renders spaces and tabs with stable visible width for decorations', () => 
   assert.equal(ghostDisplayText('  x', 0, 4), '\u00a0\u00a0x');
   assert.equal(ghostDisplayText('\tx', 0, 4), '\u00a0\u00a0\u00a0\u00a0x');
   assert.equal(ghostDisplayText('\tx', 2, 4), '\u00a0\u00a0x');
+});
+
+test('protects leading indentation and repairs it if an edit removes it', () => {
+  assert.equal(protectedPrefixLength('\tparameter int X'), 1);
+  assert.equal(protectedPrefixLength('    parameter int X'), 4);
+  assert.equal(protectedPrefixLength('parameter int X'), 0);
+
+  assert.equal(protectedPrefixRepair('\tparameter', '\tparameter'), null);
+  assert.deepEqual(
+    protectedPrefixRepair('parameter', '\tparameter'),
+    { start: 0, end: 0, text: '\t' }
+  );
+  assert.deepEqual(
+    protectedPrefixRepair('  parameter', '    parameter'),
+    { start: 0, end: 2, text: '    ' }
+  );
 });
 
 test('treats target lines beginning with plus characters as additions inside a hunk', () => {
