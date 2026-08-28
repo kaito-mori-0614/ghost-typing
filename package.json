@@ -2,7 +2,7 @@
   "name": "ghost-typing",
   "displayName": "ghost-typing",
   "publisher": "kaito-mori-0614",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "description": "Trace a target Git branch by typing its changes as VS Code ghost text.",
   "private": true,
   "repository": {
